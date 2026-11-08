@@ -71,7 +71,7 @@ class RouteField:
             self.dist = np.full(n, np.inf)
             self.pred = np.full(n, NO_PRED)
 
-    def route_from(self, fi, x, y):
+    def route_from(self, fi, x, y, target_exit_id=None):
         """Mode 1 (Occupant): Escape route from (fi, x, y) to the closest safe exterior exit."""
         g = self.grid
         start = g.nearest_walkable(fi, x, y, max_dist=14.0, mask=self.passable[fi])
@@ -83,12 +83,23 @@ class RouteField:
             return {"reachable": False, "reason": "in fire" if on_fire else "not on a walkable area",
                     "path": [], "distance_m": None, "instructions": []}
         node = g.flat(fi, *start)
-        if not math.isfinite(self.dist[node]):
+        dist, pred = self.dist, self.pred
+        if target_exit_id is not None:
+            sources = [k for k, did in self.exit_ids.items()
+                       if did == target_exit_id and self.passable[g.unflat(k)]]
+            if not sources:
+                return {"reachable": False, "reason": "selected exit unavailable",
+                        "path": [], "distance_m": None, "instructions": []}
+            dist, pred, _ = dijkstra(
+                self.graph, directed=True, indices=sources,
+                return_predecessors=True, min_only=True,
+            )
+        if not math.isfinite(dist[node]):
             return {"reachable": False, "reason": "no safe route to any exit",
                     "path": [], "distance_m": None, "instructions": []}
         nodes = [node]
-        while self.pred[node] != NO_PRED and len(nodes) < 1_000_000:
-            node = int(self.pred[node])
+        while pred[node] != NO_PRED and len(nodes) < 1_000_000:
+            node = int(pred[node])
             nodes.append(node)
         cells = [g.unflat(k) for k in nodes]
         return {

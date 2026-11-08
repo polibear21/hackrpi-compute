@@ -10,10 +10,13 @@ import {
   Dimensions,
   SafeAreaView,
   Platform,
+  Animated,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as Speech from 'expo-speech';
+import navigation from './navigation';
+const { nextRoutePoint, smoothTurn } = navigation;
 
 const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
 
@@ -61,7 +64,7 @@ function computeTurnAngleDeg(camPos, camQuat, nextWaypoint) {
     let diff = ((targetYaw - camYaw) * 180) / Math.PI;
     while (diff > 180) diff -= 360;
     while (diff < -180) diff += 360;
-    return Math.max(-65, Math.min(65, diff));
+    return diff;
   }
   return 0;
 }
@@ -91,14 +94,18 @@ export default function App() {
     role: 'occupant',
     start_node: 'F2-232',
     start_label: '232 CLASSROOM',
-    target_exit: 'F2-D25',
+    target_exit: '242 East Lobby Exit',
     path_coords: [
       [0.0, 0.0, 0.0],
-      [-5.2, 0.0, -4.8],
-      [-10.35, 0.0, -1.25],
+      [-1.1, 0.0, -0.8],
+      [0.9, 0.0, -5.8],
+      [15.0, 0.0, -5.5],
+      [31.6, 0.0, -4.6],
+      [42.1, 0.0, -6.3],
+      [44.19, 0.0, 3.29],
     ],
-    total_distance_m: 13.2,
-    instructions: ['Walk 7 m through 232 CLASSROOM', 'Walk 7 m through 218 LOBBY'],
+    total_distance_m: 59.1,
+    instructions: ['Leave room 232 and turn east along corridor 219 toward the 242 East Lobby Exit.'],
     fire_rooms: [],
     smoke_rooms: [],
     reachable: true,
@@ -112,6 +119,10 @@ export default function App() {
   const isCapturingRef = useRef(false);
   const roleRef = useRef(role);
   const targetRoomRef = useRef(targetRoomId);
+  const filteredTurnRef = useRef(null);
+  const displayedTurnRef = useRef(0);
+  const arrowMotion = useRef(new Animated.Value(0)).current;
+  const [turnDeg, setTurnDeg] = useState(0);
 
   useEffect(() => {
     roleRef.current = role;
@@ -281,20 +292,24 @@ export default function App() {
   // Pick next waypoint along the 3D DCC route at least ~1.2m ahead
   const nextWaypoint = useMemo(() => {
     const coords = route?.path_coords || [];
-    if (coords.length === 0) return null;
-    for (let i = 0; i < coords.length; i++) {
-      const pt = coords[i];
-      if (Math.hypot(pt[0] - position[0], pt[2] - position[2]) >= 1.2) {
-        return pt;
-      }
-    }
-    return coords[coords.length - 1];
+    return nextRoutePoint(coords, position);
   }, [route, position]);
 
-  const turnDeg = useMemo(
-    () => computeTurnAngleDeg(position, quaternion, nextWaypoint),
-    [position, quaternion, nextWaypoint]
-  );
+  useEffect(() => {
+    if (!connected || !localized || route.arrived || !route.reachable || !nextWaypoint) return;
+    const desired = computeTurnAngleDeg(position, quaternion, nextWaypoint);
+    const filtered = filteredTurnRef.current == null ? desired : smoothTurn(filteredTurnRef.current, desired);
+    filteredTurnRef.current = filtered;
+    const wrapped = ((filtered + 180) % 360 + 360) % 360 - 180;
+    const stable = Math.abs(wrapped) > 150 && displayedTurnRef.current !== 0
+      ? Math.sign(displayedTurnRef.current) * Math.abs(wrapped) : wrapped;
+    const displayTurn = Math.max(-65, Math.min(65, stable));
+    displayedTurnRef.current = displayTurn;
+    setTurnDeg(displayTurn);
+    const animation = Animated.timing(arrowMotion, { toValue: displayTurn, duration: 300, useNativeDriver: true });
+    animation.start();
+    return () => animation.stop();
+  }, [position, quaternion, nextWaypoint, connected, localized, route.arrived, route.reachable, arrowMotion]);
 
   const fireRoomIds = useMemo(() => {
     const s = new Set();
@@ -320,7 +335,6 @@ export default function App() {
     );
   }
 
-  const shiftX = (turnDeg / 65) * (SCREEN_W * 0.25);
   const mapX = (x) => Math.max(4, Math.min(148, 22 + ((x + 12) / 56) * 124));
   const mapZ = (z) => Math.max(4, Math.min(64, 38 + ((z + 10) / 18) * 28));
   const primaryInstruction =
@@ -360,10 +374,9 @@ export default function App() {
 
       {/* 2. 3D PERSPECTIVE AR FLOOR ARROWS OVERLAY */}
       <View style={styles.arFloorContainer} pointerEvents="none">
-        {[2, 1, 0].map((idx) => {
+        {(!connected || !localized || !route.reachable || route.arrived ? [] : [2, 1, 0]).map((idx) => {
           const isLit = pulsePhase === idx;
           const scale = 1.0 - idx * 0.22;
-          const offsetX = shiftX * ((idx + 1) / 3);
           const baseColor = !route.reachable
             ? '#ef4444'
             : role === 'firefighter'
@@ -375,7 +388,7 @@ export default function App() {
             : 'rgba(6, 182, 212, 0.45)';
 
           return (
-            <View
+            <Animated.View
               key={idx}
               style={[
                 styles.chevronRow,
@@ -383,9 +396,9 @@ export default function App() {
                   marginBottom: 18,
                   transform: [
                     { perspective: 420 },
-                    { translateX: offsetX },
+                    { translateX: arrowMotion.interpolate({ inputRange: [-65, 65], outputRange: [-SCREEN_W * 0.25 * ((idx + 1) / 3), SCREEN_W * 0.25 * ((idx + 1) / 3)] }) },
                     { rotateX: '58deg' },
-                    { rotateZ: `${turnDeg * 0.45}deg` },
+                    { rotateZ: arrowMotion.interpolate({ inputRange: [-65, 65], outputRange: ['-29.25deg', '29.25deg'] }) },
                     { scale },
                   ],
                 },
@@ -402,7 +415,7 @@ export default function App() {
                   },
                 ]}
               />
-            </View>
+            </Animated.View>
           );
         })}
       </View>
@@ -536,11 +549,13 @@ export default function App() {
                   !route.reachable && { color: '#ef4444' },
                 ]}
               >
-                {!route.reachable
+                {route.arrived
+                  ? 'ARRIVED AT 242 EAST LOBBY EXIT'
+                  : !route.reachable
                   ? `⚠️ ${route.reason || 'NO SAFE ROUTE'}`
                   : role === 'firefighter'
                   ? `🎯 TARGET ROOM: ${(route.target_exit || targetRoomId).toUpperCase()}`
-                  : `🚪 CLOSEST SAFE EXIT: ${(route.target_exit || 'EXIT').toUpperCase()}`}
+                  : `🚪 EXIT: ${(route.target_exit || 'EXIT').toUpperCase()}`}
               </Text>
               <Text style={styles.turnInstruction} numberOfLines={2}>
                 {primaryInstruction}
@@ -552,7 +567,7 @@ export default function App() {
                 role === 'firefighter' && { backgroundColor: 'rgba(249, 115, 22, 0.25)' },
               ]}
             >
-              {route.total_distance_m ? `${route.total_distance_m}m` : '—'}
+              {route.arrived ? 'ARRIVED' : route.total_distance_m != null ? `${route.total_distance_m}m` : '—'}
             </Text>
           </View>
         </View>
@@ -575,6 +590,24 @@ export default function App() {
             }}
           />
           {/* DCC Floor 2 Room Dots */}
+          {(route.path_coords || []).slice(1).map((end, i) => {
+            const start = route.path_coords[i];
+            const x1 = mapX(start[0]), y1 = mapZ(start[2]);
+            const x2 = mapX(end[0]), y2 = mapZ(end[2]);
+            const length = Math.hypot(x2 - x1, y2 - y1);
+            if (length < 0.1) return null;
+            return <View key={`route-${i}`} style={{
+              position: 'absolute', left: (x1 + x2) / 2 - length / 2,
+              top: (y1 + y2) / 2 - 1.5, width: length, height: 3,
+              backgroundColor: '#22d3ee', borderRadius: 2,
+              transform: [{ rotate: `${Math.atan2(y2 - y1, x2 - x1)}rad` }],
+            }} />;
+          })}
+          {role === 'occupant' && <View style={{
+            position: 'absolute', left: mapX(44.19) - 5, top: mapZ(3.29) - 5,
+            width: 10, height: 10, borderRadius: 2, backgroundColor: '#10b981',
+            borderColor: '#ffffff', borderWidth: 1,
+          }} />}
           {nodes.map((n) => (
             <View
               key={n.id}
@@ -610,6 +643,9 @@ export default function App() {
             }}
           />
         </View>
+        <Text style={{ color: '#22d3ee', fontSize: 10, marginTop: 4 }}>
+          {route.arrived ? 'Arrived at 242' : 'Cyan: route · Green: exit 242'}
+        </Text>
       </View>
 
       {/* 5. BOTTOM ACTION BAR: Firefighter Live Fire Reporting OR Occupant Trapped/Mayday */}

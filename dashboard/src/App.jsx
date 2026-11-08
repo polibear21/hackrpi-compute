@@ -88,7 +88,7 @@ function computeLocalDijkstra(nodes, edges, ffPos) {
     }
     if (!u) break;
     visited.add(u);
-    if (nodeMap[u].is_exit && !nodeMap[u].blocked) {
+    if (u === 'exit_east_242' && !nodeMap[u].blocked) {
       chosenExit = u;
       break;
     }
@@ -361,7 +361,7 @@ export default function App() {
   const [nodes, setNodes] = useState(DEFAULT_NODES);
   const [edges, setEdges] = useState(DEFAULT_EDGES);
   const [pointcloud, setPointcloud] = useState([]);
-  const [ffPos, setFfPos] = useState([0.0, 0.0, 0.3]);
+  const [ffPos, setFfPos] = useState([0.1, 0.0, 0.5]);
   const [mayday, setMayday] = useState(false);
   const [audioCue, setAudioCue] = useState('system_online.mp3');
   const [glbUrl, setGlbUrl] = useState('/building.glb');
@@ -792,6 +792,17 @@ export default function App() {
         )}
 
         {/* Interactive Waypoint Nodes */}
+        {(route.path_coords || []).slice(1).flatMap((end, i) => {
+          const start = route.path_coords[i];
+          const direction = new THREE.Vector3(...end).sub(new THREE.Vector3(...start));
+          const length = direction.length();
+          direction.normalize();
+          return Array.from({ length: Math.ceil(length / 2) }, (_, j) => {
+            const origin = new THREE.Vector3(...start).addScaledVector(direction, (j + 0.5) * length / Math.ceil(length / 2));
+            origin.y += 0.2;
+            return <arrowHelper key={`${i}-${j}`} args={[direction, origin, Math.min(1, length * 0.8), '#22d3ee', 0.35, 0.3]} />;
+          });
+        })}
         {nodes.map((node) => (
           <WaypointNode
             key={node.id}

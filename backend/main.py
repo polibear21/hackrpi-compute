@@ -39,6 +39,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from backend.core.fire import FireSim
+from backend.core.arrival import ExitArrival
 from backend.core.grid import BuildingGrid
 from backend.core.model import ModelError, load_building, load_building_file
 from backend.core.routing import RouteField, best_room_cell
@@ -705,8 +706,8 @@ def compute_dcc_route_for_pose(
             raw = world.field.route_to_room(fi, x_plan, y_plan, target_room_id)
             target_label = raw.get("target_label") or target_room_id
         else:
-            raw = world.field.route_from(fi, x_plan, y_plan)
-            target_label = raw.get("exit") or "Closest Safe Exit"
+            raw = world.field.route_from(fi, x_plan, y_plan, target_exit_id="F2-D56")
+            target_label = "242 East Lobby Exit"
 
     dcc_path = raw.get("path") or []
     arkit_coords = [dcc_plan_to_arkit(pt[1], pt[2], pt[0]) for pt in dcc_path if len(pt) >= 3]
@@ -783,6 +784,7 @@ class ARClientSession:
         self.dcc_xy: Optional[List[float]] = [40.1, 60.0]
         self.pending_label: Optional[str] = None
         self.pending_count: int = 0
+        self.exit_arrival = ExitArrival()
         self.last_route: Dict[str, Any] = compute_dcc_route_for_pose(
             self.arkit_pos,
             self.role,
@@ -1679,9 +1681,25 @@ async def ws_ar_endpoint(ws: WebSocket) -> None:
                     session.dcc_xy,
                 )
 
+            confirmed_location = bool(loc.get("localized")) and loc.get("room_id") == session.last_room_id
+            arrived, just_arrived = session.exit_arrival.update(
+                confirmed_location, session.last_room_id, session.dcc_xy, session.role
+            )
+            session.last_route["arrived"] = arrived
+            if arrived:
+                session.last_route["instructions"] = ["Arrived at 242 East Lobby Exit."]
+                session.last_route["total_distance_m"] = 0.0
+                session.last_route["distance_m"] = 0.0
+                session.last_route["path_coords"] = []
+            if just_arrived:
+                audio_cue = "arrived_at_exit.mp3"
+
             response = {
                 "type": "pose_and_route",
                 **loc,
+                "localized": confirmed_location,
+                "position": session.arkit_pos,
+                "quaternion": session.arkit_quat,
                 "role": session.role,
                 "current_node": session.last_route["start_node"],
                 "current_label": session.last_route["start_label"],
